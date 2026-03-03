@@ -39,8 +39,26 @@ def get_pane_list():
     return panes
 
 
+def get_session_id_from_lsof(pid):
+    """Find the CC session ID by checking which JSONL file the process has open."""
+    r = run(["lsof", "-p", str(pid), "-Fn"])
+    for line in r.stdout.split("\n"):
+        if line.startswith("n") and line.endswith(".jsonl"):
+            path = line[1:]
+            # Skip subagent files
+            if "/subagents/" in path:
+                continue
+            # Extract session ID from filename
+            basename = os.path.basename(path)
+            session_id = basename.replace(".jsonl", "")
+            # Validate it looks like a UUID
+            if re.match(r"^[a-f0-9-]{36}$", session_id):
+                return session_id
+    return None
+
+
 def get_session_id_from_process(shell_pid):
-    """Extract CC session ID from the claude process args."""
+    """Extract CC session ID from process tree."""
     r = run(["pgrep", "-P", str(shell_pid)])
     if r.returncode != 0:
         return None, None
@@ -54,38 +72,29 @@ def get_session_id_from_process(shell_pid):
         if "claude" not in args:
             continue
 
-        # Extract --resume ID
+        # Method 1: Extract --resume ID from args
         m = re.search(r"--resume\s+'?([a-f0-9-]+)", args)
         if m:
             return m.group(1), cpid
 
-        # No --resume flag — session was started fresh.
-        # We can still find its session ID from the most recent JSONL.
+        # Method 2: Check open JSONL files via lsof
+        session_id = get_session_id_from_lsof(cpid)
+        if session_id:
+            return session_id, cpid
+
+        # Method 3: Check child processes of claude (node, etc.)
+        r3 = run(["pgrep", "-P", cpid])
+        if r3.returncode == 0:
+            for grandchild in r3.stdout.strip().split("\n"):
+                grandchild = grandchild.strip()
+                if grandchild:
+                    session_id = get_session_id_from_lsof(grandchild)
+                    if session_id:
+                        return session_id, cpid
+
         return None, cpid
 
     return None, None
-
-
-def find_session_from_cwd(cwd, projects_dir):
-    """For non-resumed sessions, find the session ID from the most recent JSONL."""
-    encoded = cwd.replace("/", "-")
-    proj_dir = Path(projects_dir) / encoded
-    if not proj_dir.is_dir():
-        return None
-
-    best_mtime = 0
-    best_file = None
-    for f in proj_dir.glob("*.jsonl"):
-        if "/subagents/" in str(f):
-            continue
-        mt = f.stat().st_mtime
-        if mt > best_mtime:
-            best_mtime = mt
-            best_file = f
-
-    if best_file:
-        return best_file.stem
-    return None
 
 
 def get_process_cwd(pid):
@@ -104,9 +113,10 @@ def snapshot(snapshot_dir, projects_dir):
 
     panes = get_pane_list()
     entries = []
+    seen_sessions = set()
 
     for p in panes:
-        # Skip non-CC panes
+        # Skip non-CC panes (idle shells)
         if p["command"] in ("zsh", "bash"):
             continue
 
@@ -119,17 +129,19 @@ def snapshot(snapshot_dir, projects_dir):
         if not cwd:
             cwd = get_process_cwd(p["shell_pid"])
 
-        # If no session_id from args, try from cwd
-        if not session_id and cwd:
-            session_id = find_session_from_cwd(cwd, projects_dir)
-
-        if session_id:
+        if session_id and session_id not in seen_sessions:
+            seen_sessions.add(session_id)
             entries.append({
                 "window": p["window"],
                 "pane": p["pane"],
                 "session": session_id,
                 "cwd": cwd or str(Path.home()),
             })
+
+    # Don't overwrite good snapshots with empty ones
+    if not entries:
+        print("No active CC sessions found — skipping snapshot to preserve last good state")
+        return
 
     snapshot_file = snapshot_dir / f"{datetime.now().strftime('%Y%m%dT%H%M%S')}.json"
     data = {
@@ -165,6 +177,10 @@ def restore(snapshot_dir, projects_dir, claude_bin="claude", claude_flags="", sn
         data = json.load(f)
 
     panes_to_restore = data["panes"]
+    if not panes_to_restore:
+        print("Snapshot is empty — nothing to restore.", file=sys.stderr)
+        sys.exit(1)
+
     print(f"Restoring from: {sf}")
     print(f"Timestamp: {data['timestamp']}")
     print(f"Sessions: {len(panes_to_restore)}")
@@ -183,16 +199,17 @@ def restore(snapshot_dir, projects_dir, claude_bin="claude", claude_flags="", sn
             name, count = line.split("\t")
             existing[name] = int(count)
 
-    # Ensure windows exist with enough panes
+    # Ensure windows exist, create panes via split-window
     for win_name, win_panes in by_window.items():
         needed = len(win_panes)
         if win_name not in existing:
-            tmux("new-window", "-n", win_name)
+            tmux("new-window", "-d", "-n", win_name)
             existing[win_name] = 1
             print(f"Created window '{win_name}'")
 
         for _ in range(needed - existing.get(win_name, 0)):
             tmux("split-window", "-t", win_name, "-d")
+            time.sleep(0.15)
         tmux("select-layout", "-t", win_name, "tiled")
 
     # Get fresh pane listing
@@ -232,7 +249,7 @@ def restore(snapshot_dir, projects_dir, claude_bin="claude", claude_flags="", sn
         tmux("send-keys", "-t", pane["pane_id"], full_cmd, "Enter")
         print(f"OK     {win}:{pane['pane']} → {session_id[:8]}")
         restored += 1
-        time.sleep(0.15)
+        time.sleep(0.5)  # Stagger to avoid fork-pressure segfault
 
     print(f"\nRestored {restored} sessions ({failed} skipped)")
 
