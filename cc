@@ -27,6 +27,31 @@ case "$1" in
 		shift
 		exec "$PLUGIN_DIR/scripts/browse_sessions.sh" "$@"
 		;;
+	snapshot)
+		shift
+		exec "$PLUGIN_DIR/scripts/snapshot.sh" "$@"
+		;;
+	restore)
+		shift
+		exec "$PLUGIN_DIR/scripts/restore.sh" "$@"
+		;;
+	clean)
+		shift
+		# Kill idle shell panes (not in meta window)
+		killed=0
+		while IFS= read -r line; do
+			pane_id="${line%%:*}"
+			rest="${line#*:}"
+			win="${rest%%:*}"
+			cmd="${rest##*:}"
+			if [[ "$cmd" =~ ^(zsh|bash)$ ]] && [[ "$win" != "meta" ]]; then
+				echo "Killing idle pane $pane_id in $win"
+				tmux kill-pane -t "$pane_id"
+				((killed++))
+			fi
+		done < <(tmux list-panes -a -F '#{pane_id}:#{window_name}:#{pane_current_command}')
+		echo "Killed $killed idle pane(s)"
+		;;
 	detect)
 		shift
 		# List panes with CC detection

@@ -208,20 +208,52 @@ def shorten_path(path):
 # Commands
 # ---------------------------------------------------------------------------
 
+def extract_searchable_text(filepath, limit=500):
+    """Extract searchable text: user msgs, assistant msgs, tool file paths."""
+    parts = []
+    try:
+        with open(filepath) as f:
+            for line in f:
+                if len(" ".join(parts)) > limit * 20:
+                    break
+                obj = json.loads(line)
+                role = obj.get("type")
+                if role not in ("user", "assistant"):
+                    continue
+                msg = obj.get("message", {})
+                content = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+                if isinstance(content, list):
+                    for c in content:
+                        if isinstance(c, dict):
+                            if c.get("type") == "text":
+                                t = c.get("text", "")[:300]
+                                if not t.strip().startswith("<"):
+                                    parts.append(t)
+                            elif c.get("type") == "tool_use":
+                                inp = c.get("input", {})
+                                fp = inp.get("file_path", "") or inp.get("command", "")[:100] or inp.get("pattern", "") or ""
+                                if fp:
+                                    parts.append(fp)
+    except Exception:
+        pass
+    return " ".join(parts)
+
+
 def cmd_search(keywords):
-    keyword_str = " ".join(keywords)
+    kws = [kw.lower() for kw in keywords]
     active = get_active_session_ids()
     sessions = get_all_sessions()
 
     for filepath, sid, mtime in sessions:
         if sid in active:
             continue
-        messages = extract_user_messages(filepath, limit=3)
-        for msg in messages:
-            if all(kw in msg.lower() for kw in keyword_str.lower().split()):
-                launch_dir = get_session_dir(filepath)
-                print(f"{filepath}\t{launch_dir}")
-                return 0
+        # Build searchable text: folder + user/assistant msgs + tool file paths
+        folder = os.path.basename(os.path.dirname(filepath)).lstrip("-")
+        searchable = (folder + " " + extract_searchable_text(filepath)).lower()
+        if all(kw in searchable for kw in kws):
+            launch_dir = get_session_dir(filepath)
+            print(f"{filepath}\t{launch_dir}")
+            return 0
     return 1
 
 

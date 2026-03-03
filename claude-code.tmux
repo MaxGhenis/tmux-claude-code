@@ -42,11 +42,24 @@ setup_status_interpolation() {
 	fi
 }
 
+setup_auto_snapshot() {
+	# Auto-snapshot every 5 minutes via tmux timer
+	# Uses a background hook that checks elapsed time
+	local interval
+	interval=$(get_tmux_option "@claude_snapshot_interval" "300")
+	local script="$CURRENT_DIR/scripts/snapshot.sh"
+	# Set a periodic hook (fires every 60s on any client activity)
+	# Only actually snapshots if interval has elapsed
+	tmux set-hook -g pane-focus-in \
+		"run-shell -b 'SNAP_DIR=\"$HOME/.claude/snapshots\"; INTERVAL=$interval; LAST=\"\$SNAP_DIR/.last_auto\"; NOW=\$(date +%s); if [ -f \"\$LAST\" ]; then PREV=\$(cat \"\$LAST\"); else PREV=0; fi; if [ \$((NOW - PREV)) -ge \$INTERVAL ]; then echo \$NOW > \"\$LAST\"; \"$script\" > /dev/null 2>&1; fi'"
+}
+
 main() {
 	set_new_session_binding
 	set_named_session_binding
 	set_resume_binding
 	set_browse_binding
 	setup_status_interpolation
+	setup_auto_snapshot
 }
 main

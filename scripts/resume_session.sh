@@ -37,6 +37,22 @@ main() {
 		launch_dir="$HOME"
 	fi
 
+	# Ensure session file exists in the project dir Claude will use for launch_dir.
+	# Claude encodes cwd as s|/|-|g — if the session was stored under a stale/moved
+	# project path, copy it so --resume can find it.
+	local encoded_dir
+	encoded_dir=$(echo "$launch_dir" | sed 's|/|-|g')
+	local target_project="$projects_dir/$encoded_dir"
+	local target_file="$target_project/$session_id.jsonl"
+	if [[ ! -f "$target_file" ]]; then
+		mkdir -p "$target_project"
+		cp "$session_file" "$target_file"
+		local subagent_dir="${session_file%.jsonl}"
+		if [[ -d "$subagent_dir" ]]; then
+			cp -r "$subagent_dir" "$target_project/"
+		fi
+	fi
+
 	local cmd="env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT $claude_bin --resume '$session_id' $claude_flags; exec zsh"
 
 	# Try split-window first; fall back to new-window if no space
