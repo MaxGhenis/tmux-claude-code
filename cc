@@ -37,20 +37,65 @@ case "$1" in
 		;;
 	clean)
 		shift
-		# Kill idle shell panes (not in meta window)
-		killed=0
+		# Kill idle shell panes, but:
+		# - Never kill panes in the meta window
+		# - Always keep at least 1 pane per window (prevents window destruction)
+		# - Show what would be killed and ask for confirmation
+
+		# Count panes per window
+		declare -A window_total
+		declare -A window_idle
+		while IFS= read -r line; do
+			win="${line%%:*}"
+			window_total[$win]=$(( ${window_total[$win]:-0} + 1 ))
+		done < <(tmux list-panes -a -F '#{window_name}:#{pane_id}')
+
+		# Collect candidates
+		candidates=()
 		while IFS= read -r line; do
 			pane_id="${line%%:*}"
 			rest="${line#*:}"
 			win="${rest%%:*}"
 			cmd="${rest##*:}"
 			if [[ "$cmd" =~ ^(zsh|bash)$ ]] && [[ "$win" != "meta" ]]; then
-				echo "Killing idle pane $pane_id in $win"
-				tmux kill-pane -t "$pane_id"
-				((killed++))
+				# Keep at least 1 pane per window
+				idle_so_far=$(( ${window_idle[$win]:-0} + 1 ))
+				if [[ $idle_so_far -lt ${window_total[$win]:-1} ]]; then
+					window_idle[$win]=$idle_so_far
+					candidates+=("$pane_id:$win")
+				fi
 			fi
 		done < <(tmux list-panes -a -F '#{pane_id}:#{window_name}:#{pane_current_command}')
+
+		if [[ ${#candidates[@]} -eq 0 ]]; then
+			echo "No idle panes to clean."
+			exit 0
+		fi
+
+		echo "Will kill ${#candidates[@]} idle pane(s):"
+		for c in "${candidates[@]}"; do
+			echo "  ${c#*:} → ${c%%:*}"
+		done
+
+		read -p "Proceed? [y/N] " confirm
+		if [[ "$confirm" != [yY]* ]]; then
+			echo "Aborted."
+			exit 0
+		fi
+
+		killed=0
+		for c in "${candidates[@]}"; do
+			pane_id="${c%%:*}"
+			win="${c#*:}"
+			echo "Killing idle pane $pane_id in $win"
+			tmux kill-pane -t "$pane_id"
+			((killed++))
+		done
 		echo "Killed $killed idle pane(s)"
+		;;
+	organize)
+		shift
+		exec python3 "$PLUGIN_DIR/scripts/organize.py" "$@"
 		;;
 	detect)
 		shift

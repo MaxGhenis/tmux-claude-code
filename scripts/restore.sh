@@ -10,7 +10,9 @@ source "$CURRENT_DIR/helpers.sh"
 source "$CURRENT_DIR/variables.sh"
 
 # Guard: don't restore if claude is already running in any pane
-active_claude_panes=$(tmux list-panes -a -F '#{pane_current_command}' 2>/dev/null | grep -c '^claude$' || true)
+# pane_current_command may report as version number (e.g. "2.1.68") instead of "claude",
+# so also check for running claude processes via ps
+active_claude_panes=$(pgrep -f 'claude.*--resume' 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$active_claude_panes" -gt 0 ]]; then
     echo "cc restore: $active_claude_panes CC session(s) already running — skipping to prevent duplicates" >&2
     exit 0

@@ -239,11 +239,12 @@ def extract_searchable_text(filepath, limit=500):
     return " ".join(parts)
 
 
-def cmd_search(keywords):
+def cmd_search(keywords, limit=0):
     kws = [kw.lower() for kw in keywords]
     active = get_active_session_ids()
     sessions = get_all_sessions()
 
+    found = 0
     for filepath, sid, mtime in sessions:
         if sid in active:
             continue
@@ -253,8 +254,10 @@ def cmd_search(keywords):
         if all(kw in searchable for kw in kws):
             launch_dir = get_session_dir(filepath)
             print(f"{filepath}\t{launch_dir}")
-            return 0
-    return 1
+            found += 1
+            if limit and found >= limit:
+                break
+    return 0 if found else 1
 
 
 def cmd_list(limit=20, fmt="table"):
@@ -321,9 +324,21 @@ def main():
 
     if command == "search":
         if len(sys.argv) < 3:
-            print("Usage: session_search.py search <keywords...>", file=sys.stderr)
+            print("Usage: session_search.py search [--limit N] <keywords...>", file=sys.stderr)
             sys.exit(1)
-        sys.exit(cmd_search(sys.argv[2:]))
+        limit = 0  # 0 = all results
+        args = sys.argv[2:]
+        if "--limit" in args:
+            idx = args.index("--limit")
+            limit = int(args[idx + 1])
+            args = args[:idx] + args[idx + 2:]
+        elif any(a.startswith("--limit=") for a in args):
+            for i, a in enumerate(args):
+                if a.startswith("--limit="):
+                    limit = int(a.split("=")[1])
+                    args = args[:i] + args[i + 1:]
+                    break
+        sys.exit(cmd_search(args, limit=limit))
 
     elif command == "list":
         limit = 20
